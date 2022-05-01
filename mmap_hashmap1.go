@@ -200,13 +200,13 @@ func (instance *Instance) init() {
     fmt.Println(instance.numberOfSlots)
 
     instance.mmap_hashtable = new (MMap);
-    instance.mmap_hashtable.init(hashTableSize, "/tmp/hashtable_1.bin")
+    instance.mmap_hashtable.init(hashTableSize, "./tmp/hashtable_1.bin")
 
     mmap := (*[1073741824]HashtableSlot)(unsafe.Pointer(&instance.mmap_hashtable.mmap_ptr[0]))
     instance.htSlots = mmap[:]
 
     instance.mmap_duplicates = new (MMap);
-    instance.mmap_duplicates.init(2 * 1024 * 1024 * 1024, "/tmp/hashtable_duplicates_1.bin")
+    instance.mmap_duplicates.init(2 * 1024 * 1024 * 1024, "./tmp/hashtable_duplicates_1.bin")
 
     instance.mmap_duplicates_next = (*uint32)(unsafe.Pointer(&instance.mmap_duplicates.mmap_ptr[0]))
 
@@ -216,7 +216,7 @@ func (instance *Instance) init() {
 
     instance.valueFile = new (ValueFile)
 
-    instance.valueFile.init("/tmp/hashtable_1_1_value.bin")
+    instance.valueFile.init("./tmp/hashtable_1_1_value.bin")
 }
 
 func (instance *Instance) close() {
@@ -314,23 +314,60 @@ func (instance *Instance) hasKey(key []byte) bool {
     }
 }
 
-func (instance *Instance) get(value []byte) []byte {
-    return nil
+func (instance *Instance) get(key []byte) []byte {
+    h := fnv.New32a()
+    h.Write([]byte(key))
+    val := h.Sum32()
+    idx := val%instance.numberOfSlots
+
+    node := &instance.htSlots[idx]
+
+    key = padOrTrim(key, MaxKeySize)
+
+    if node.fno_lineno == 0 {
+       return nil
+    } else {
+      lock := instance.locks.getLock(idx)
+      lock.RLock()
+      blockHeader := (*IndexBlockHeader)(unsafe.Pointer(&instance.mmap_duplicates.mmap_ptr[node.fno_lineno]))
+      for i := uint16(0); i < blockHeader.used; i++ {
+         idxEntry := (*IdxEntry)(unsafe.Pointer(&instance.mmap_duplicates.mmap_ptr[node.fno_lineno + uint32(sizeOfIndexBlockHeader) + uint32(i)]))
+	 fmt.Println(string(idxEntry.key[:]))
+	 res := bytes.Compare(key, idxEntry.key[:])
+	 if res == 0 {
+	    ret := instance.valueFile.readAt(idxEntry.fno_lineno)
+            lock.RUnlock()
+            return ret
+         }
+      }
+      lock.RUnlock()
+      return nil
+    }
 }
 
 func main() {
     var instance *Instance = new (Instance)
     instance.init()
 
+    fmt.Println("====PUT=====")
     instance.put([]byte("key"), []byte("value"))
     instance.put([]byte("host"), []byte("vpc3848"))
-    instance.put([]byte("host1"), []byte("vpc3848"))
+    instance.put([]byte("host1"), []byte("vpc3898"))
 
+    fmt.Println("=====hasKey=====")
     r := instance.hasKey([]byte("key"))
     fmt.Println(r)
 
     r = instance.hasKey([]byte("unknown"))
     fmt.Println(r)
+
+    fmt.Println("=====GET=====")
+
+    v := instance.get([]byte("host"))
+    fmt.Println(string(v))
+
+    v = instance.get([]byte("host1"))
+    fmt.Println(string(v))
 
     instance.close()
 }
